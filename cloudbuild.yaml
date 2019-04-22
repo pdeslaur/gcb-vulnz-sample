@@ -1,0 +1,40 @@
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  id: Build
+  args: ['build', '-t', 'gcr.io/$PROJECT_ID/vulnz-sample', '.']
+- name: 'gcr.io/cloud-builders/docker'
+  id: Push
+  args: ['push', 'gcr.io/$PROJECT_ID/vulnz-sample']
+- name: 'gcr.io/cloud-builders/gcloud'
+  id: Wait for vulnerability analysis
+  entrypoint: 'bash'
+  args:
+  - "-c"
+  - |
+    apt update
+    apt install jq -y
+    IMAGE=$(gcloud container images describe gcr.io/$PROJECT_ID/vulnz-sample --format='value(image_summary.fully_qualified_digest)')
+    echo "Image: $${IMAGE}"
+    while : ; do
+      STATUS=$(curl -sG -H "Authorization: Bearer $(gcloud auth print-access-token)" "https://containeranalysis.googleapis.com/v1beta1/projects/$PROJECT_ID/occurrences" --data-urlencode "filter=resource_url=\"https://$${IMAGE}\" AND kind=\"DISCOVERY\"" | jq -r '.occurrences[-1].discovered.discovered.analysisStatus')
+      echo "Analysis status: $${STATUS}"
+      [[ "$${STATUS}" = "PENDING" || "$${STATUS}" = "SCANNING" ]] || break
+      sleep 2
+    done
+- name: 'gcr.io/cloud-builders/gcloud'
+  id: Vulnerability analysis result
+  entrypoint: 'bash'
+  args:
+  - '-c'
+  - 'gcloud beta container images list-tags --show-occurrences --limit=1 gcr.io/$PROJECT_ID/vulnz-sample --format="value(vuln_counts)"'
+- name: 'gcr.io/cloud-builders/gcloud'
+  id: Fail if vulnerabilities are found
+  entrypoint: 'bash'
+  args:
+  - '-c'
+  - |
+    [[ $(gcloud beta container images list-tags --show-occurrences --limit=1 gcr.io/$PROJECT_ID/vulnz-sample --format="value(vuln_counts)" | tr -d '[:space:]') = "" ]] || exit 1
+images:
+- gcr.io/$PROJECT_ID/vulnz-sample
+options:
+  substitution_option: 'ALLOW_LOOSE'
